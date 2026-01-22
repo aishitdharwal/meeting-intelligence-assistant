@@ -1,0 +1,35 @@
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "meeting-intelligence-assistant"
+region = "ap-south-1"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+parameter_overrides = "S3BucketName=\"meeting-intelligence-data\" Environment=\"prod\""
+s3_prefix = "meeting-intelligence-assistant"
+image_repositories = []
+
+[default.package.parameters]
+resolve_s3 = true
+region = "ap-south-1"
+
+[default.sync.parameters]
+watch = true
+region = "ap-south-1"
+
+[default.local_start_api.parameters]
+warm_containers = "EAGER"
+
+[default.local_start_lambda.parameters]
+warm_containers = "EAGER"

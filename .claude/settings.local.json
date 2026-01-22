@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(chmod:*)",
+      "Bash(python config/register_webhook.py:*)",
+      "Bash(aws logs tail:*)",
+      "Bash(sam build:*)",
+      "Bash(sam deploy:*)",
+      "Bash(/Users/aishitdharwal/Documents/meeting-intelligence-assistant/config/test_webhook.sh)"
+    ]
+  }
+}

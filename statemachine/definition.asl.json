@@ -1,0 +1,253 @@
+{
+  "Comment": "Meeting Intelligence Processing Workflow - Transcribe and summarize meeting recordings",
+  "StartAt": "DownloadVideo",
+  "States": {
+    "DownloadVideo": {
+      "Type": "Task",
+      "Resource": "${VideoDownloaderArn}",
+      "Comment": "Download video from Google Drive to S3",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleFailure"
+        }
+      ],
+      "ResultPath": "$.downloadResult",
+      "Next": "ExtractAudio"
+    },
+
+    "ExtractAudio": {
+      "Type": "Task",
+      "Resource": "${AudioExtractorArn}",
+      "Comment": "Extract audio from video using FFmpeg",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleFailure"
+        }
+      ],
+      "ResultPath": "$.audioResult",
+      "Next": "ChunkAudio"
+    },
+
+    "ChunkAudio": {
+      "Type": "Task",
+      "Resource": "${AudioChunkerArn}",
+      "Comment": "Split audio into 10-minute chunks with 30s overlap",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleFailure"
+        }
+      ],
+      "ResultPath": "$.chunkResult",
+      "Next": "ParallelTranscription"
+    },
+
+    "ParallelTranscription": {
+      "Type": "Map",
+      "Comment": "Transcribe all chunks in parallel using OpenAI Whisper",
+      "ItemsPath": "$.chunkResult.chunks",
+      "MaxConcurrency": 6,
+      "ResultPath": "$.transcripts",
+      "Iterator": {
+        "StartAt": "TranscribeChunk",
+        "States": {
+          "TranscribeChunk": {
+            "Type": "Task",
+            "Resource": "${TranscriberArn}",
+            "Retry": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "TranscriptionFailed"
+              }
+            ],
+            "End": true
+          },
+          "TranscriptionFailed": {
+            "Type": "Pass",
+            "Comment": "Mark chunk as failed but continue processing",
+            "Result": {
+              "status": "failed",
+              "error": "Transcription failed for this chunk"
+            },
+            "End": true
+          }
+        }
+      },
+      "Next": "ParallelSummarization"
+    },
+
+    "ParallelSummarization": {
+      "Type": "Map",
+      "Comment": "Summarize all transcripts in parallel using GPT-4o Mini",
+      "ItemsPath": "$.transcripts",
+      "MaxConcurrency": 6,
+      "ResultPath": "$.summaries",
+      "Iterator": {
+        "StartAt": "CheckTranscriptSuccess",
+        "States": {
+          "CheckTranscriptSuccess": {
+            "Type": "Choice",
+            "Comment": "Skip summarization if transcription failed",
+            "Choices": [
+              {
+                "Variable": "$.status",
+                "StringEquals": "failed",
+                "Next": "SkipSummarization"
+              }
+            ],
+            "Default": "SummarizeChunk"
+          },
+          "SummarizeChunk": {
+            "Type": "Task",
+            "Resource": "${SummarizerArn}",
+            "Retry": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "SummarizationFailed"
+              }
+            ],
+            "End": true
+          },
+          "SkipSummarization": {
+            "Type": "Pass",
+            "Comment": "Skip summarization for failed transcription",
+            "Result": {
+              "status": "skipped",
+              "reason": "Transcription failed"
+            },
+            "End": true
+          },
+          "SummarizationFailed": {
+            "Type": "Pass",
+            "Comment": "Mark chunk as failed but continue processing",
+            "Result": {
+              "status": "failed",
+              "error": "Summarization failed for this chunk"
+            },
+            "End": true
+          }
+        }
+      },
+      "Next": "CombineResults"
+    },
+
+    "CombineResults": {
+      "Type": "Task",
+      "Resource": "${ResultCombinerArn}",
+      "Comment": "Combine all summaries and action items into final report",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleFailure"
+        }
+      ],
+      "ResultPath": "$.finalResult",
+      "Next": "SendNotifications"
+    },
+
+    "SendNotifications": {
+      "Type": "Task",
+      "Resource": "${NotificationSenderArn}",
+      "Comment": "Send email and Slack notifications",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.notificationError",
+          "Comment": "Continue to success even if notifications fail",
+          "Next": "Success"
+        }
+      ],
+      "Next": "Success"
+    },
+
+    "Success": {
+      "Type": "Succeed",
+      "Comment": "Meeting processing completed successfully"
+    },
+
+    "HandleFailure": {
+      "Type": "Task",
+      "Resource": "${FailureHandlerArn}",
+      "Comment": "Handle workflow failure and update DynamoDB",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 2,
+          "BackoffRate": 1.5
+        }
+      ],
+      "Next": "Failure"
+    },
+
+    "Failure": {
+      "Type": "Fail",
+      "Error": "MeetingProcessingFailed",
+      "Cause": "Meeting processing workflow failed - check logs for details"
+    }
+  }
+}

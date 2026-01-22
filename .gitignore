@@ -205,3 +205,21 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# AWS SAM
+.aws-sam/
+samconfig.toml.bak
+
+# Secrets and credentials
+*.pem
+*.key
+service-account*.json
+credentials.json
+
+# FFmpeg binaries (will be downloaded by script)
+layers/ffmpeg/bin/
+
+# Temporary files
+/tmp/
+*.tmp
+*.bak

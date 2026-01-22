@@ -1,0 +1,421 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Meeting Intelligence Assistant - Automated meeting transcription and summarization
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 900
+    MemorySize: 512
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: meeting-intelligence
+        LOG_LEVEL: INFO
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: S3 bucket name for storing meeting data (must be globally unique)
+    Default: meeting-intelligence-data
+
+  Environment:
+    Type: String
+    Description: Environment name
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Resources:
+  # ===========================
+  # S3 BUCKET
+  # ===========================
+  MeetingDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${S3BucketName}-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIntelligentTiering
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: INTELLIGENT_TIERING
+          - Id: DeleteOldVideos
+            Status: Enabled
+            ExpirationInDays: 90
+            Prefix: meetings/
+            NoncurrentVersionExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  # ===========================
+  # DYNAMODB TABLE
+  # ===========================
+  MeetingProcessingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'MeetingProcessing-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: meeting_id
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: N
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: meeting_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: StatusIndex
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: DateIndex
+          KeySchema:
+            - AttributeName: date
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: MeetingIntelligence
+
+  # ===========================
+  # LAMBDA FUNCTIONS
+  # ===========================
+
+  # 1. Webhook Handler
+  WebhookHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-WebhookHandler-${Environment}'
+      CodeUri: src/webhook_handler/
+      Handler: lambda_function.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref MeetingProcessingTable
+          STATE_MACHINE_ARN: !Ref MeetingIntelligenceStateMachine
+          WEBHOOK_SECRET_NAME: meeting-intelligence/webhook-secret
+          GOOGLE_SA_SECRET_NAME: meeting-intelligence/google-service-account
+          FOLDER_ID_SECRET_NAME: meeting-intelligence/google-drive-folder-id
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MeetingProcessingTable
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt MeetingIntelligenceStateMachine.Name
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:meeting-intelligence/*'
+      Events:
+        WebhookApi:
+          Type: Api
+          Properties:
+            Path: /meeting-webhook
+            Method: post
+            RestApiId: !Ref MeetingWebhookApi
+
+  # 2. Video Downloader
+  VideoDownloaderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-VideoDownloader-${Environment}'
+      CodeUri: src/video_downloader/
+      Handler: lambda_function.lambda_handler
+      Timeout: 900
+      MemorySize: 3008
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref MeetingDataBucket
+          DYNAMODB_TABLE: !Ref MeetingProcessingTable
+          GOOGLE_SA_SECRET_NAME: meeting-intelligence/google-service-account
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref MeetingDataBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MeetingProcessingTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:meeting-intelligence/*'
+
+  # 3. Audio Extractor
+  AudioExtractorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-AudioExtractor-${Environment}'
+      CodeUri: src/audio_extractor/
+      Handler: lambda_function.lambda_handler
+      Timeout: 900
+      MemorySize: 3008
+      Layers:
+        - !Ref FFmpegLayer
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref MeetingDataBucket
+          DYNAMODB_TABLE: !Ref MeetingProcessingTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref MeetingDataBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MeetingProcessingTable
+
+  # 4. Audio Chunker
+  AudioChunkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-AudioChunker-${Environment}'
+      CodeUri: src/audio_chunker/
+      Handler: lambda_function.lambda_handler
+      Timeout: 600
+      MemorySize: 2048
+      Layers:
+        - !Ref FFmpegLayer
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref MeetingDataBucket
+          CHUNK_DURATION: 600
+          OVERLAP_DURATION: 30
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref MeetingDataBucket
+
+  # 5. Transcriber
+  TranscriberFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-Transcriber-${Environment}'
+      CodeUri: src/transcriber/
+      Handler: lambda_function.lambda_handler
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref MeetingDataBucket
+          OPENAI_API_KEY_SECRET_NAME: meeting-intelligence/openai-api-key
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref MeetingDataBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:meeting-intelligence/*'
+
+  # 6. Summarizer
+  SummarizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-Summarizer-${Environment}'
+      CodeUri: src/summarizer/
+      Handler: lambda_function.lambda_handler
+      Timeout: 180
+      MemorySize: 512
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref MeetingDataBucket
+          OPENAI_API_KEY_SECRET_NAME: meeting-intelligence/openai-api-key
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref MeetingDataBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:meeting-intelligence/*'
+
+  # 7. Result Combiner
+  ResultCombinerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-ResultCombiner-${Environment}'
+      CodeUri: src/result_combiner/
+      Handler: lambda_function.lambda_handler
+      Timeout: 120
+      MemorySize: 1024
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref MeetingDataBucket
+          DYNAMODB_TABLE: !Ref MeetingProcessingTable
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref MeetingDataBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MeetingProcessingTable
+
+  # 8. Notification Sender
+  NotificationSenderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-NotificationSender-${Environment}'
+      CodeUri: src/notification_sender/
+      Handler: lambda_function.lambda_handler
+      Timeout: 120
+      MemorySize: 256
+      Environment:
+        Variables:
+          SLACK_WEBHOOK_SECRET_NAME: meeting-intelligence/slack-webhook-url
+          EMAIL_RECIPIENTS_SECRET_NAME: meeting-intelligence/email-recipients
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:meeting-intelligence/*'
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: '*'
+
+  # 9. Failure Handler
+  FailureHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-FailureHandler-${Environment}'
+      CodeUri: src/failure_handler/
+      Handler: lambda_function.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref MeetingProcessingTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MeetingProcessingTable
+        - CloudWatchPutMetricPolicy: {}
+
+  # ===========================
+  # LAMBDA LAYERS
+  # ===========================
+  FFmpegLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub 'ffmpeg-layer-${Environment}'
+      Description: FFmpeg static binary for audio/video processing
+      ContentUri: layers/ffmpeg/
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Delete
+
+  # ===========================
+  # STEP FUNCTIONS STATE MACHINE
+  # ===========================
+  MeetingIntelligenceStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub 'MeetingIntelligence-${Environment}'
+      Type: STANDARD
+      DefinitionUri: statemachine/definition.asl.json
+      DefinitionSubstitutions:
+        VideoDownloaderArn: !GetAtt VideoDownloaderFunction.Arn
+        AudioExtractorArn: !GetAtt AudioExtractorFunction.Arn
+        AudioChunkerArn: !GetAtt AudioChunkerFunction.Arn
+        TranscriberArn: !GetAtt TranscriberFunction.Arn
+        SummarizerArn: !GetAtt SummarizerFunction.Arn
+        ResultCombinerArn: !GetAtt ResultCombinerFunction.Arn
+        NotificationSenderArn: !GetAtt NotificationSenderFunction.Arn
+        FailureHandlerArn: !GetAtt FailureHandlerFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref VideoDownloaderFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref AudioExtractorFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref AudioChunkerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref TranscriberFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SummarizerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ResultCombinerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref NotificationSenderFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FailureHandlerFunction
+
+  # ===========================
+  # API GATEWAY
+  # ===========================
+  MeetingWebhookApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'MeetingIntelligence-API-${Environment}'
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'POST'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Goog-Channel-Token,X-Goog-Resource-State'"
+        AllowOrigin: "'*'"
+      TracingEnabled: true
+
+  # ===========================
+  # CLOUDWATCH LOG GROUPS
+  # ===========================
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/vendedlogs/states/MeetingIntelligence-${Environment}'
+      RetentionInDays: 30
+
+Outputs:
+  WebhookUrl:
+    Description: API Gateway endpoint for Google Drive webhooks
+    Value: !Sub 'https://${MeetingWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/meeting-webhook'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebhookUrl'
+
+  StateMachineArn:
+    Description: Step Functions State Machine ARN
+    Value: !Ref MeetingIntelligenceStateMachine
+    Export:
+      Name: !Sub '${AWS::StackName}-StateMachineArn'
+
+  S3BucketName:
+    Description: S3 Bucket for meeting data
+    Value: !Ref MeetingDataBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-S3Bucket'
+
+  DynamoDBTableName:
+    Description: DynamoDB table for meeting processing
+    Value: !Ref MeetingProcessingTable
+    Export:
+      Name: !Sub '${AWS::StackName}-DynamoDBTable'
+
+  ApiEndpoint:
+    Description: API Gateway endpoint
+    Value: !Sub 'https://${MeetingWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiEndpoint'
