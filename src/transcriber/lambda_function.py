@@ -8,6 +8,7 @@ import os
 import boto3
 import time
 from openai import OpenAI
+from common.openai_pricing import calculate_whisper_cost
 
 s3 = boto3.client('s3')
 secretsmanager = boto3.client('secretsmanager')
@@ -111,8 +112,11 @@ def lambda_handler(event, context):
         chunk_size = os.path.getsize(audio_local_path)
         print(f"Chunk downloaded: {chunk_size / 1024 / 1024:.2f} MB")
 
-        # Transcribe audio
+        # Transcribe audio with timing
+        transcription_start_time = time.time()
         transcript = transcribe_audio(audio_local_path, chunk_id)
+        transcription_processing_time = time.time() - transcription_start_time
+        print(f"Transcription processing time: {transcription_processing_time:.2f}s")
 
         # Convert transcript to dict
         transcript_dict = {
@@ -144,6 +148,11 @@ def lambda_handler(event, context):
         transcript_dict['start_time'] = start_time
         transcript_dict['end_time'] = end_time
 
+        # Calculate transcription cost
+        duration = transcript_dict['duration']
+        transcription_cost = calculate_whisper_cost(duration)
+        print(f"Transcription cost: ${transcription_cost:.4f} for {duration:.1f}s of audio")
+
         # Upload transcript to S3
         transcript_s3_key = f'meetings/{meeting_id}/transcripts/transcript_{chunk_id}.json'
         print(f"Uploading transcript to S3: {transcript_s3_key}")
@@ -169,6 +178,10 @@ def lambda_handler(event, context):
             'end_time': end_time,
             'text_length': len(transcript_dict['text']),
             'language': transcript_dict['language'],
+            'duration': duration,
+            'cost': transcription_cost,
+            'model': 'whisper-1',
+            'processing_time_seconds': transcription_processing_time,
             'status': 'success'
         }
 

@@ -11,6 +11,10 @@ Globals:
       Variables:
         POWERTOOLS_SERVICE_NAME: meeting-intelligence
         LOG_LEVEL: INFO
+        # OpenAI Pricing (as of January 2026)
+        WHISPER_PRICE_PER_SECOND: "0.0001"  # $0.006/minute
+        GPT4O_MINI_INPUT_PRICE: "0.00015"   # $0.15 per 1M tokens
+        GPT4O_MINI_OUTPUT_PRICE: "0.0006"   # $0.60 per 1M tokens
 
 Parameters:
   S3BucketName:
@@ -221,6 +225,8 @@ Resources:
       Handler: lambda_function.lambda_handler
       Timeout: 300
       MemorySize: 512
+      Layers:
+        - !Ref CommonCodeLayer
       Environment:
         Variables:
           S3_BUCKET: !Ref MeetingDataBucket
@@ -243,6 +249,8 @@ Resources:
       Handler: lambda_function.lambda_handler
       Timeout: 180
       MemorySize: 512
+      Layers:
+        - !Ref CommonCodeLayer
       Environment:
         Variables:
           S3_BUCKET: !Ref MeetingDataBucket
@@ -265,6 +273,8 @@ Resources:
       Handler: lambda_function.lambda_handler
       Timeout: 120
       MemorySize: 1024
+      Layers:
+        - !Ref CommonCodeLayer
       Environment:
         Variables:
           S3_BUCKET: !Ref MeetingDataBucket
@@ -317,6 +327,58 @@ Resources:
             TableName: !Ref MeetingProcessingTable
         - CloudWatchPutMetricPolicy: {}
 
+  # 10. S3 Video Ingester
+  S3VideoIngesterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-S3VideoIngester-${Environment}'
+      CodeUri: src/s3_video_ingester/
+      Handler: lambda_function.lambda_handler
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref MeetingDataBucket
+          DYNAMODB_TABLE: !Ref MeetingProcessingTable
+          MAX_FILE_SIZE_MB: 500
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref MeetingDataBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MeetingProcessingTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:HeadObject
+              Resource: 'arn:aws:s3:::*/*'
+
+  # 11. S3 Submit Handler
+  S3SubmitHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'MeetingIntel-S3SubmitHandler-${Environment}'
+      CodeUri: src/s3_submit_handler/
+      Handler: lambda_function.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref MeetingProcessingTable
+          STATE_MACHINE_ARN: !Ref S3MeetingIntelligenceStateMachine
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MeetingProcessingTable
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt S3MeetingIntelligenceStateMachine.Name
+      Events:
+        S3SubmitApi:
+          Type: Api
+          Properties:
+            Path: /submit-s3-video
+            Method: post
+            RestApiId: !Ref MeetingWebhookApi
+
   # ===========================
   # LAMBDA LAYERS
   # ===========================
@@ -326,6 +388,16 @@ Resources:
       LayerName: !Sub 'ffmpeg-layer-${Environment}'
       Description: FFmpeg static binary for audio/video processing
       ContentUri: layers/ffmpeg/
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Delete
+
+  CommonCodeLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub 'common-code-layer-${Environment}'
+      Description: Shared utilities for Meeting Intelligence (OpenAI pricing, etc.)
+      ContentUri: layers/common/
       CompatibleRuntimes:
         - python3.11
       RetentionPolicy: Delete
@@ -366,6 +438,80 @@ Resources:
         - LambdaInvokePolicy:
             FunctionName: !Ref FailureHandlerFunction
 
+  # S3 State Machine (for direct S3 uploads)
+  S3MeetingIntelligenceStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub 'MeetingIntelligence-S3-${Environment}'
+      Type: STANDARD
+      DefinitionUri: statemachine/definition-s3.asl.json
+      DefinitionSubstitutions:
+        S3VideoIngesterArn: !GetAtt S3VideoIngesterFunction.Arn
+        AudioExtractorArn: !GetAtt AudioExtractorFunction.Arn
+        AudioChunkerArn: !GetAtt AudioChunkerFunction.Arn
+        TranscriberArn: !GetAtt TranscriberFunction.Arn
+        SummarizerArn: !GetAtt SummarizerFunction.Arn
+        ResultCombinerArn: !GetAtt ResultCombinerFunction.Arn
+        NotificationSenderArn: !GetAtt NotificationSenderFunction.Arn
+        FailureHandlerArn: !GetAtt FailureHandlerFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref S3VideoIngesterFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref AudioExtractorFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref AudioChunkerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref TranscriberFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SummarizerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ResultCombinerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref NotificationSenderFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FailureHandlerFunction
+        - CloudWatchLogsFullAccess
+      Logging:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt S3StateMachineLogGroup.Arn
+
+  # ===========================
+  # UI BUCKET
+  # ===========================
+  MeetingIntelligenceUIBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'meeting-intelligence-ui-${AWS::AccountId}'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: MeetingIntelligence
+
+  MeetingIntelligenceUIBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MeetingIntelligenceUIBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub '${MeetingIntelligenceUIBucket.Arn}/*'
+
   # ===========================
   # API GATEWAY
   # ===========================
@@ -387,6 +533,12 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/vendedlogs/states/MeetingIntelligence-${Environment}'
+      RetentionInDays: 30
+
+  S3StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/vendedlogs/states/MeetingIntelligence-S3-${Environment}'
       RetentionInDays: 30
 
 Outputs:
@@ -419,3 +571,21 @@ Outputs:
     Value: !Sub 'https://${MeetingWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
     Export:
       Name: !Sub '${AWS::StackName}-ApiEndpoint'
+
+  S3SubmitApiEndpoint:
+    Description: API Gateway endpoint for S3 video submission
+    Value: !Sub 'https://${MeetingWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/submit-s3-video'
+    Export:
+      Name: !Sub '${AWS::StackName}-S3SubmitApiEndpoint'
+
+  S3StateMachineArn:
+    Description: S3 Step Functions State Machine ARN
+    Value: !Ref S3MeetingIntelligenceStateMachine
+    Export:
+      Name: !Sub '${AWS::StackName}-S3StateMachineArn'
+
+  UIWebsiteURL:
+    Description: Static website URL for submission UI
+    Value: !GetAtt MeetingIntelligenceUIBucket.WebsiteURL
+    Export:
+      Name: !Sub '${AWS::StackName}-UIWebsiteURL'

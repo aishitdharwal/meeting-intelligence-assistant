@@ -22,7 +22,7 @@ FOLDER_ID = '19AISXdj2EPreDaIDc98arD7Yu1xq11Tx'
 WEBHOOK_URL = 'https://nzdm4iwlw0.execute-api.ap-south-1.amazonaws.com/prod/meeting-webhook'
 
 # Your webhook secret token from setup-secrets.sh output
-WEBHOOK_SECRET = '0b58e48a7ab3783a420e0344574b06badd208bf12d44803cec804f85f8069758'
+WEBHOOK_SECRET = '723a1db5554f605a3ccc1a00a05bf213d2ce77a0f2d2df64143cfcc17cbbd519'
 
 # =============================================================================
 

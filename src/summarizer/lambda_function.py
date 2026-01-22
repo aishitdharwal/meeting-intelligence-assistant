@@ -8,6 +8,7 @@ import os
 import boto3
 import time
 from openai import OpenAI
+from common.openai_pricing import calculate_gpt4o_mini_cost
 
 s3 = boto3.client('s3')
 secretsmanager = boto3.client('secretsmanager')
@@ -93,6 +94,7 @@ Important:
         try:
             print(f"Generating summary for chunk {chunk_id} (attempt {attempt + 1}/{max_retries})...")
 
+            summarization_start_time = time.time()
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
@@ -102,10 +104,32 @@ Important:
                 temperature=0.3,
                 max_tokens=1000
             )
+            summarization_processing_time = time.time() - summarization_start_time
 
             summary_text = response.choices[0].message.content
+
+            # Capture usage data
+            usage = response.usage
+            prompt_tokens = usage.prompt_tokens
+            completion_tokens = usage.completion_tokens
+            total_tokens = usage.total_tokens
+
+            # Calculate cost
+            summary_cost = calculate_gpt4o_mini_cost(prompt_tokens, completion_tokens)
+
             print(f"Summary generated for chunk {chunk_id}")
-            return summary_text
+            print(f"Token usage: {total_tokens} ({prompt_tokens} in / {completion_tokens} out)")
+            print(f"Cost: ${summary_cost:.6f}")
+            print(f"Processing time: {summarization_processing_time:.2f}s")
+
+            return {
+                'text': summary_text,
+                'prompt_tokens': prompt_tokens,
+                'completion_tokens': completion_tokens,
+                'total_tokens': total_tokens,
+                'cost': summary_cost,
+                'processing_time_seconds': summarization_processing_time
+            }
 
         except Exception as e:
             error_msg = str(e)
@@ -225,10 +249,10 @@ def lambda_handler(event, context):
         print(f"Formatted transcript length: {len(formatted_transcript)} characters")
 
         # Generate summary
-        summary_response = generate_summary(formatted_transcript, chunk_id, time_range)
+        summary_result = generate_summary(formatted_transcript, chunk_id, time_range)
 
         # Parse response
-        parsed_summary = parse_summary_response(summary_response)
+        parsed_summary = parse_summary_response(summary_result['text'])
 
         print(f"Summary: {parsed_summary['summary'][:100]}...")
         print(f"Action items found: {len(parsed_summary['action_items'])}")
@@ -242,7 +266,12 @@ def lambda_handler(event, context):
             'end_time': end_time,
             'summary': parsed_summary['summary'],
             'action_items': parsed_summary['action_items'],
-            'raw_response': summary_response
+            'raw_response': summary_result['text'],
+            'prompt_tokens': summary_result['prompt_tokens'],
+            'completion_tokens': summary_result['completion_tokens'],
+            'total_tokens': summary_result['total_tokens'],
+            'cost': summary_result['cost'],
+            'processing_time_seconds': summary_result['processing_time_seconds']
         }
 
         # Upload summary to S3
@@ -268,6 +297,12 @@ def lambda_handler(event, context):
             'summary_s3_bucket': S3_BUCKET,
             'time_range': time_range,
             'action_items_count': len(parsed_summary['action_items']),
+            'prompt_tokens': summary_result['prompt_tokens'],
+            'completion_tokens': summary_result['completion_tokens'],
+            'total_tokens': summary_result['total_tokens'],
+            'cost': summary_result['cost'],
+            'model': 'gpt-4o-mini',
+            'processing_time_seconds': summary_result['processing_time_seconds'],
             'status': 'success'
         }
 

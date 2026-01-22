@@ -104,6 +104,21 @@ def lambda_handler(event, context):
         # Sort summaries by chunk_id
         successful_summaries.sort(key=lambda x: x.get('chunk_id', 0))
 
+        # Initialize cost and performance tracking
+        total_transcription_cost = 0
+        total_summarization_cost = 0
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_transcription_time = 0
+        total_summarization_time = 0
+
+        # Aggregate transcription costs from event
+        transcripts = event.get('transcripts', [])
+        for transcript_result in transcripts:
+            if transcript_result.get('status') == 'success':
+                total_transcription_cost += transcript_result.get('cost', 0)
+                total_transcription_time += transcript_result.get('processing_time_seconds', 0)
+
         # Download all summary files from S3
         all_summaries = []
         all_action_items = []
@@ -119,6 +134,12 @@ def lambda_handler(event, context):
 
                 all_summaries.append(summary_data)
 
+                # Aggregate summarization costs and metrics
+                total_summarization_cost += summary_meta.get('cost', 0)
+                total_prompt_tokens += summary_meta.get('prompt_tokens', 0)
+                total_completion_tokens += summary_meta.get('completion_tokens', 0)
+                total_summarization_time += summary_meta.get('processing_time_seconds', 0)
+
                 # Collect action items with metadata
                 for action_item in summary_data.get('action_items', []):
                     action_item['mentioned_at'] = summary_data.get('time_range', f'Chunk {chunk_id}')
@@ -131,6 +152,24 @@ def lambda_handler(event, context):
 
         print(f"Downloaded {len(all_summaries)} summaries")
         print(f"Total action items before deduplication: {len(all_action_items)}")
+
+        # Calculate total cost and metrics
+        total_cost = total_transcription_cost + total_summarization_cost
+        total_processing_time = total_transcription_time + total_summarization_time
+        total_tokens = total_prompt_tokens + total_completion_tokens
+
+        print(f"\nCost Summary:")
+        print(f"  Transcription: ${total_transcription_cost:.4f}")
+        print(f"  Summarization: ${total_summarization_cost:.4f}")
+        print(f"  Total: ${total_cost:.4f}")
+        print(f"\nToken Usage:")
+        print(f"  Prompt tokens: {total_prompt_tokens}")
+        print(f"  Completion tokens: {total_completion_tokens}")
+        print(f"  Total tokens: {total_tokens}")
+        print(f"\nProcessing Time:")
+        print(f"  Transcription: {total_transcription_time:.1f}s")
+        print(f"  Summarization: {total_summarization_time:.1f}s")
+        print(f"  Total: {total_processing_time:.1f}s")
 
         # Combine summaries
         combined_summary_parts = []
@@ -170,6 +209,22 @@ def lambda_handler(event, context):
             'final_summary': final_summary,
             'action_items': deduplicated_action_items,
             'total_chunks_processed': len(all_summaries),
+            'cost_breakdown': {
+                'transcription_cost': round(total_transcription_cost, 4),
+                'summarization_cost': round(total_summarization_cost, 4),
+                'total_cost': round(total_cost, 4),
+                'currency': 'USD'
+            },
+            'usage_metrics': {
+                'prompt_tokens': total_prompt_tokens,
+                'completion_tokens': total_completion_tokens,
+                'total_tokens': total_tokens
+            },
+            'performance_metrics': {
+                'transcription_time_seconds': round(total_transcription_time, 1),
+                'summarization_time_seconds': round(total_summarization_time, 1),
+                'total_processing_time_seconds': round(total_processing_time, 1)
+            },
             'completed_at': datetime.utcnow().isoformat()
         }
 
@@ -197,7 +252,11 @@ def lambda_handler(event, context):
                     action_items = :action_items,
                     final_result_s3_path = :result_path,
                     updated_at = :updated,
-                    completed_at = :completed
+                    completed_at = :completed,
+                    total_cost = :cost,
+                    cost_breakdown = :cost_breakdown,
+                    usage_metrics = :usage,
+                    performance_metrics = :perf
             ''',
             ExpressionAttributeNames={'#s': 'status'},
             ExpressionAttributeValues={
@@ -206,7 +265,22 @@ def lambda_handler(event, context):
                 ':action_items': deduplicated_action_items,
                 ':result_path': final_result_s3_key,
                 ':updated': int(datetime.utcnow().timestamp()),
-                ':completed': datetime.utcnow().isoformat()
+                ':completed': datetime.utcnow().isoformat(),
+                ':cost': Decimal(str(round(total_cost, 4))),
+                ':cost_breakdown': {
+                    'transcription': Decimal(str(round(total_transcription_cost, 4))),
+                    'summarization': Decimal(str(round(total_summarization_cost, 4)))
+                },
+                ':usage': {
+                    'prompt_tokens': total_prompt_tokens,
+                    'completion_tokens': total_completion_tokens,
+                    'total_tokens': total_tokens
+                },
+                ':perf': {
+                    'transcription_time': Decimal(str(round(total_transcription_time, 1))),
+                    'summarization_time': Decimal(str(round(total_summarization_time, 1))),
+                    'total_time': Decimal(str(round(total_processing_time, 1)))
+                }
             }
         )
 
@@ -219,7 +293,10 @@ def lambda_handler(event, context):
             'duration': format_time(duration_seconds),
             'final_summary': final_summary,
             'action_items': deduplicated_action_items,
-            'final_result_s3_path': final_result_s3_key
+            'final_result_s3_path': final_result_s3_key,
+            'cost_breakdown': final_result['cost_breakdown'],
+            'usage_metrics': final_result['usage_metrics'],
+            'performance_metrics': final_result['performance_metrics']
         }
 
     except Exception as e:

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meeting Intelligence - AI Classroom</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo-container">
+                <img src="logo.png" alt="AI Classroom" class="logo-image">
+                <div class="logo-text">
+                    <h1 class="brand-name">AI Classroom</h1>
+                    <p class="tagline">Build. Break. Scale.</p>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="container">
+            <div class="content-header">
+                <h2 class="page-title">Meeting Intelligence Assistant</h2>
+                <p class="page-subtitle">Automated transcription, summarization, and action item extraction from meeting recordings</p>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>Submit Video for Processing</h3>
+                    <p>Upload your meeting recording from S3 for intelligent analysis</p>
+                </div>
+
+                <form id="uploadForm" class="upload-form">
+                    <div class="form-group">
+                        <label for="s3Uri">S3 URI</label>
+                        <div class="input-wrapper">
+                            <svg class="input-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                            </svg>
+                            <input
+                                type="text"
+                                id="s3Uri"
+                                name="s3Uri"
+                                placeholder="s3://your-bucket/path/to/video.mp4"
+                                pattern="^s3://[^/]+/.+$"
+                                required
+                            >
+                        </div>
+                        <small class="help-text">Supported formats: MP4, MOV, AVI, MKV, WEBM</small>
+                    </div>
+
+                    <button type="submit" id="submitBtn" class="btn-primary">
+                        <svg class="btn-icon" id="btnIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="7 10 12 15 17 10"></polyline>
+                            <line x1="12" y1="15" x2="12" y2="3"></line>
+                        </svg>
+                        <span id="btnText">Process Video</span>
+                        <span id="btnLoader" class="loader hidden"></span>
+                    </button>
+                </form>
+
+                <div id="result" class="alert alert-success hidden">
+                    <div class="alert-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        </svg>
+                    </div>
+                    <div class="alert-content">
+                        <h4>Processing Started Successfully</h4>
+                        <div class="result-details">
+                            <div class="result-item">
+                                <span class="result-label">Meeting ID:</span>
+                                <code id="meetingId"></code>
+                            </div>
+                            <div class="result-item">
+                                <span class="result-label">Status:</span>
+                                <span class="badge badge-processing">Processing</span>
+                            </div>
+                        </div>
+                        <p class="result-message">Your video is being analyzed. You'll receive a notification when the transcription, summary, and action items are ready.</p>
+                    </div>
+                </div>
+
+                <div id="error" class="alert alert-error hidden">
+                    <div class="alert-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="8" x2="12" y2="12"></line>
+                            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                    </div>
+                    <div class="alert-content">
+                        <h4>Processing Failed</h4>
+                        <p id="errorMessage"></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Features Section -->
+            <div class="features">
+                <div class="feature">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                            <line x1="12" y1="19" x2="12" y2="23"></line>
+                            <line x1="8" y1="23" x2="16" y2="23"></line>
+                        </svg>
+                    </div>
+                    <h4>Transcription</h4>
+                    <p>OpenAI Whisper-powered accurate transcription with timestamps</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                            <polyline points="14 2 14 8 20 8"></polyline>
+                            <line x1="16" y1="13" x2="8" y2="13"></line>
+                            <line x1="16" y1="17" x2="8" y2="17"></line>
+                            <polyline points="10 9 9 9 8 9"></polyline>
+                        </svg>
+                    </div>
+                    <h4>Summarization</h4>
+                    <p>GPT-4o Mini generates intelligent summaries of key discussion points</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 11l3 3L22 4"></path>
+                            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+                        </svg>
+                    </div>
+                    <h4>Action Items</h4>
+                    <p>Automatic extraction of tasks, owners, and due dates</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-brand">
+                <h3>AI Classroom</h3>
+                <p class="footer-tagline">Production AI Engineering</p>
+            </div>
+            <div class="footer-links">
+                <a href="https://github.com/aishitdharwal/meeting-intelligence-assistant/blob/main/README.md" target="_blank" rel="noopener noreferrer">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                    </svg>
+                    Documentation
+                </a>
+                <a href="https://github.com/aishitdharwal/meeting-intelligence-assistant" target="_blank" rel="noopener noreferrer">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+                    </svg>
+                    GitHub
+                </a>
+                <a href="mailto:aishit.dharwal@figuringoutaishit.com">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+                        <polyline points="22,6 12,13 2,6"></polyline>
+                    </svg>
+                    Contact
+                </a>
+            </div>
+        </div>
+        <div class="footer-bottom">
+            <p>&copy; 2026 AI Classroom. Build. Break. Scale.</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

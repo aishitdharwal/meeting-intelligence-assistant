@@ -1,4 +1,4 @@
-Channel ID: meeting-intelligence-20260117-214829
+Channel ID: meeting-intelligence-20260122-172424
 Resource ID: qAOqyTo2eLYjuy9t-b3jwynJrII
-Expiration: 2026-01-18 21:48:30
-Registered: 2026-01-17 21:48:30
+Expiration: 2026-01-23 17:24:25
+Registered: 2026-01-22 17:24:25
